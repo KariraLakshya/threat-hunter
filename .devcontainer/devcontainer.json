@@ -28,7 +28,6 @@
         }
     },
     "onCreateCommand": "pip install -r requirements.txt",
-    "postStartCommand": "docker compose up -d && echo 'Stack starting — ES ready in ~60s'",
     "customizations": {
         "vscode": {
             "extensions": [
