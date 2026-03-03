@@ -1,6 +1,11 @@
 {
     "name": "Autonomous Threat Hunter",
     "image": "mcr.microsoft.com/devcontainers/universal:2",
+    "features": {
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {
+            "dockerDashComposeVersion": "v2"
+        }
+    },
     "forwardPorts": [
         9200,
         5601,
