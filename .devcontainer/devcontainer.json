@@ -1,23 +1,13 @@
 {
     "name": "Autonomous Threat Hunter",
-    "image": "mcr.microsoft.com/devcontainers/python:3.11",
-    "features": {
-        "ghcr.io/devcontainers/features/docker-in-docker:2": {
-            "version": "latest",
-            "dockerDashComposeVersion": "v2"
-        }
-    },
-    // Forward all service ports so you can access them from your browser
+    "image": "mcr.microsoft.com/devcontainers/universal:2",
     "forwardPorts": [
-        9200, // Elasticsearch
-        5601, // Kibana
-        5000, // Logstash TCP input
-        6379, // Redis
-        8000, // FastAPI backend
-        8501, // Streamlit dashboard
-        1514, // Wazuh agent UDP
-        1515, // Wazuh agent TCP
-        55000 // Wazuh API
+        9200,
+        5601,
+        5000,
+        6379,
+        8000,
+        8501
     ],
     "portsAttributes": {
         "9200": {
@@ -37,10 +27,8 @@
             "onAutoForward": "openBrowser"
         }
     },
-    // Runs once when the Codespace is first created
     "onCreateCommand": "pip install -r requirements.txt",
-    // Runs every time the Codespace starts (creates + resumes)
-    "postStartCommand": "docker compose up -d && echo '✅ Stack starting — ES takes ~60s to be ready'",
+    "postStartCommand": "docker compose up -d && echo 'Stack starting — ES ready in ~60s'",
     "customizations": {
         "vscode": {
             "extensions": [
@@ -54,12 +42,5 @@
                 "terminal.integrated.defaultProfile.linux": "bash"
             }
         }
-    },
-    // Resource recommendation: use 4-core / 16GB machine for ELK stack
-    // Set in: github.com → repo Settings → Codespaces → Default machine type
-    "hostRequirements": {
-        "cpus": 4,
-        "memory": "16gb",
-        "storage": "32gb"
     }
 }
