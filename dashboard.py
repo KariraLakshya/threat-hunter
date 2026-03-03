@@ -88,11 +88,13 @@ with st.sidebar:
         def status_dot(ok: bool) -> str:
             return "🟢" if ok else "🔴"
 
-        st.write(f"{status_dot(svcs.get('elasticsearch', {}).get('ok', False))} Elasticsearch")
-        st.write(f"{status_dot(svcs.get('redis', {}).get('ok', False))} Redis / Celery")
-        st.write(f"{status_dot(True))} Logstash")   # if API is up, Logstash is likely up
-        st.write(f"{status_dot(True))} Wazuh Manager")
-        st.write(f"{status_dot(True))} AI Agent")
+        es_ok  = svcs.get("elasticsearch", {}).get("ok", False)
+        red_ok = svcs.get("redis", {}).get("ok", False)
+        st.write(status_dot(es_ok)  + " Elasticsearch")
+        st.write(status_dot(red_ok) + " Redis / Celery")
+        st.write(status_dot(True)   + " Logstash")
+        st.write(status_dot(True)   + " Wazuh Manager")
+        st.write(status_dot(True)   + " AI Agent")
     else:
         st.error("⚠️  API unreachable\nStart: uvicorn api.main:app --port 8000")
 
