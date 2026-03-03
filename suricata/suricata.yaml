@@ -1,0 +1,69 @@
+%YAML 1.1
+---
+
+# Suricata minimal configuration for Threat Hunter Phase 1
+
+vars:
+  address-groups:
+    HOME_NET: "[192.168.0.0/16,10.0.0.0/8,172.16.0.0/12]"
+    EXTERNAL_NET: "!$HOME_NET"
+  port-groups:
+    HTTP_PORTS: "80"
+    SHELLCODE_PORTS: "!80"
+    SSH_PORTS: "22"
+
+# Default log directory
+default-log-dir: /var/log/suricata/
+
+# EVE JSON output — this is what we feed to Logstash
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      types:
+        - alert:
+            payload: yes
+            payload-printable: yes
+            packet: yes
+            metadata: yes
+        - ssh
+        - dns
+        - tls
+        - http:
+            extended: yes
+        - files:
+            force-magic: no
+        - flow
+        - stats:
+            totals: yes
+            threads: no
+            deltas: no
+
+# Detection engine
+detect-engine:
+  - profile: medium
+  - sgh-mpm-context: auto
+
+# App-layer protocols
+app-layer:
+  protocols:
+    tls:
+      enabled: yes
+    ssh:
+      enabled: yes
+    http:
+      enabled: yes
+    dns:
+      enabled: yes
+    smb:
+      enabled: yes
+
+# Threading — auto-detect
+threading:
+  set-cpu-affinity: no
+
+# Rule files
+default-rule-path: /etc/suricata/rules
+rule-files:
+  - local.rules

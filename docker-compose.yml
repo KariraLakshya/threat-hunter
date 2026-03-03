@@ -1,0 +1,140 @@
+# ═══════════════════════════════════════════════════════════
+#  Autonomous Threat Hunter — Infrastructure
+#  ELK 8.13 · Wazuh 4.7.2 · Suricata · Redis
+# ═══════════════════════════════════════════════════════════
+
+services:
+
+  # ── Elasticsearch ────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: threat-hunter-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - ES_JAVA_OPTS=${ES_JAVA_OPTS}
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - threat-net
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s -u elastic:${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Kibana ───────────────────────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    container_name: threat-hunter-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+      - xpack.security.enabled=true
+    ports:
+      - "5601:5601"
+    networks:
+      - threat-net
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Logstash ─────────────────────────────────────────────
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.13.0
+    container_name: threat-hunter-logstash
+    env_file:
+      - .env
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - LS_JAVA_OPTS=-Xms256m -Xmx256m
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+    ports:
+      - "5044:5044"   # Beats input (Wazuh/Filebeat)
+      - "5000:5000"   # TCP/JSON input (cloud collectors, test scripts)
+    networks:
+      - threat-net
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Wazuh Manager ────────────────────────────────────────
+  wazuh-manager:
+    image: wazuh/wazuh-manager:4.7.2
+    container_name: threat-hunter-wazuh
+    environment:
+      - WAZUH_MANAGER_CONFIG=yes
+    volumes:
+      - wazuh-etc:/var/ossec/etc
+      - wazuh-logs:/var/ossec/logs
+    ports:
+      - "1514:1514/udp"   # Agent communication
+      - "1515:1515"       # Agent enrollment
+      - "55000:55000"     # Wazuh API
+    networks:
+      - threat-net
+    restart: unless-stopped
+
+  # ── Suricata (Network IDS) ──────────────────────────────
+  # NOTE: On Windows Docker Desktop, host networking is not supported.
+  # Suricata runs in offline/log-reading mode for dev/testing.
+  suricata:
+    image: jasonish/suricata:latest
+    container_name: threat-hunter-suricata
+    cap_add:
+      - NET_ADMIN
+      - SYS_NICE
+    networks:
+      - threat-net
+    volumes:
+      - ./suricata/suricata.yaml:/etc/suricata/suricata.yaml:ro
+      - ./suricata/rules:/etc/suricata/rules:ro
+      - suricata-logs:/var/log/suricata
+    # Run in test/offline mode on Windows (no live interface sniffing)
+    command: -T -c /etc/suricata/suricata.yaml
+    restart: "no"
+
+  # ── Redis (Celery broker for cloud collector scheduler) ──
+  redis:
+    image: redis:7-alpine
+    container_name: threat-hunter-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - threat-net
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+# ── Volumes ──────────────────────────────────────────────
+volumes:
+  esdata:
+    driver: local
+  wazuh-etc:
+    driver: local
+  wazuh-logs:
+    driver: local
+  suricata-logs:
+    driver: local
+  redis-data:
+    driver: local
+
+# ── Network ──────────────────────────────────────────────
+networks:
+  threat-net:
+    driver: bridge
