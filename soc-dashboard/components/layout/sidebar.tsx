@@ -5,7 +5,7 @@ import { LayoutDashboard, ShieldAlert, Bot, FlaskConical, BarChart3, Server, Set
 
 const navItems = [
   { name: "Overview", href: "/", icon: LayoutDashboard },
-  { name: "Incidents", href: "/incidents", icon: ShieldAlert },
+  { name: "Incidents", href: "/incident", icon: ShieldAlert },
   { name: "AI Investigation", href: "/ai", icon: Bot },
   { name: "Threat Intel", href: "/intel", icon: FlaskConical },
   { name: "Observability", href: "/observability", icon: BarChart3 },
