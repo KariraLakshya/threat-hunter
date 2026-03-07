@@ -7,6 +7,17 @@ esdata/
 # Incident reports + RAG vector store
 incidents/
 
+# Large Datasets
+data/
+scenarios/
+*.json
+!package.json
+
+# Logs
+*.log
+uvicorn*.log
+agent_test_output.txt
+
 # Private keys and certs
 *.pem
 *.key
@@ -18,6 +29,7 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+.pytest_cache/
 
 # OS
 .DS_Store
@@ -26,3 +38,6 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.project
+.pydevproject
+.settings/

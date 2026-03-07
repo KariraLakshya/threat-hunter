@@ -45,7 +45,7 @@ def load_scenarios(technique_filter: str = None):
         metadata={"hnsw:space": "cosine"}
     )
 
-    pattern = "scenarios/stratus_*.json"
+    pattern = "data/scenarios/stratus_*.json"
     files = glob.glob(pattern)
     if not files:
         log.error("No scenario files found. Run a Stratus attack first, then use save_scenario.py")

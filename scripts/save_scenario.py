@@ -20,6 +20,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from elasticsearch import Elasticsearch
 from dotenv import load_dotenv
 
+from mitre.mitre_mapper import FULL_MAP
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("save_scenario")
@@ -40,27 +42,34 @@ def save_scenario(technique_id: str, lookback_minutes: int = 15):
         basic_auth=(os.getenv("ELASTIC_USER", "elastic"), os.getenv("ELASTIC_PASSWORD", "changeme123"))
     )
 
-    since = (datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)).isoformat()
+    # Find which event_types map to this technique
+    target_event_types = [
+        etype for etype, mapping in FULL_MAP.items()
+        if mapping.get("technique") == technique_id
+    ]
 
-    # Query both cloud indices for recent events
+    if not target_event_types:
+        log.error(f"Technique {technique_id} is not mapped in mitre_mapper.py")
+        return
+
     query = {
         "query": {
             "bool": {
                 "filter": [
-                    {"range": {"@timestamp": {"gte": since}}},
-                    {"terms": {"environment": ["aws"]}}
+                    {"terms": {"environment": ["aws"]}},
+                    {"terms": {"event_type": target_event_types}}
                 ]
             }
         },
-        "size": 200,
-        "sort": [{"@timestamp": {"order": "asc"}}]
+        "size": 50,
+        "sort": [{"@timestamp": {"order": "desc"}}]
     }
 
     result = es.search(index="security-cloud-*", body=query)
     hits = result["hits"]["hits"]
 
     if not hits:
-        log.error(f"No cloud events found in the last {lookback_minutes} minutes. Did Stratus run?")
+        log.error(f"No cloud events found for technique {technique_id} (mapped to {target_event_types}). Did the simulator run?")
         return
 
     # Build scenario object
@@ -68,13 +77,13 @@ def save_scenario(technique_id: str, lookback_minutes: int = 15):
         "technique_id": technique_id,
         "technique_label": TECHNIQUE_LABEL.get(technique_id, technique_id),
         "captured_at": datetime.now(timezone.utc).isoformat(),
-        "source": "stratus-red-team",
+        "source": "aws-api-simulator",
         "event_count": len(hits),
         "events": [hit["_source"] for hit in hits]
     }
 
-    os.makedirs("scenarios", exist_ok=True)
-    filename = f"scenarios/stratus_{technique_id.replace('.', '_')}.json"
+    os.makedirs("data/scenarios", exist_ok=True)
+    filename = f"data/scenarios/stratus_{technique_id.replace('.', '_')}.json"
 
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(scenario, f, indent=2, default=str)
@@ -85,8 +94,9 @@ def save_scenario(technique_id: str, lookback_minutes: int = 15):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python scripts/save_scenario.py <TECHNIQUE_ID>")
-        print("Example: python scripts/save_scenario.py T1562.008")
+        print("Usage: python scripts/save_scenario.py <TECHNIQUE_ID> [lookback_minutes]")
+        print("Example: python scripts/save_scenario.py T1562.008 120")
         sys.exit(1)
 
-    save_scenario(sys.argv[1])
+    lookback = int(sys.argv[2]) if len(sys.argv) > 2 else 15
+    save_scenario(sys.argv[1], lookback)

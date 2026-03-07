@@ -35,24 +35,20 @@ On-Prem Logs              Cloud Logs (AWS)
         ATT&CK tactics + techniques
                    |
                    v
-         [agent/ai_agent.py]
-         LangGraph state machine:
-         Observe → Reason → Conclude
-         (with RAG context + FP check)
+          [agent/ai_agent.py]
+          LangGraph state machine:
+          Observe → Reason → Conclude
+          (with RAG context + FP check)
                    |
                    v
-         [sandbox/sandbox.py]
-         VirusTotal IP/hash/URL check
-         Boosts AI confidence score
+          [sandbox/sandbox.py]
+          VirusTotal IP/hash/URL check
+          Boosts AI confidence score
                    |
                    v
-       [response/response_engine.py]
-       Saves incident to SQLite
-       Sends Slack / email alert
-                   |
-                   v
-           [dashboard.py]
-           Streamlit UI for SOC analysts
+        [response/response_engine.py]
+        Saves incident to SQLite
+        Sends Slack / email alert
 ```
 
 ---
@@ -63,7 +59,7 @@ On-Prem Logs              Cloud Logs (AWS)
 
 | File | What it does |
 |------|-------------|
-| `docker-compose.yml` | Starts the full stack: Elasticsearch, Kibana, Logstash, Wazuh, Suricata, Redis |
+| `docker-compose.yml` | Starts the full stack: Elasticsearch, Logstash, Wazuh, Suricata, Redis |
 | `logstash/pipeline/security.conf` | Logstash pipeline — receives syslog on port 5000, parses with grok, tags event types, sends to ES |
 | `requirements.txt` | All Python dependencies |
 | `.env` | API keys and config (never committed to git) |
@@ -126,14 +122,6 @@ On-Prem Logs              Cloud Logs (AWS)
 
 ---
 
-### Phase 9: Dashboard
-
-| File | What it does |
-|------|-------------|
-| `dashboard.py` | Streamlit web UI — 4 pages: Incident Feed (color-coded, filterable), Investigation (trigger runs), Sandbox (VT check), Settings (health + stats) |
-
----
-
 ### Testing & DevOps
 
 | File | What it does |
@@ -165,8 +153,7 @@ curl -X POST http://localhost:8000/investigate \
   -d '{"lookback_minutes": 90}'
 
 # 5. View results
-$env:PYTHONUTF8=1; python -m streamlit run dashboard.py
-# Open http://localhost:8501
+# Check api/main.py logs or incidents/incidents.db for results
 ```
 
 ---

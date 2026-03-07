@@ -12,7 +12,6 @@ import subprocess
 
 ES_HOST = os.getenv("ES_HOST", "http://localhost:9200")
 ELASTIC_PASSWORD = os.getenv("ELASTIC_PASSWORD", "changeme123")
-KIBANA_HOST = os.getenv("KIBANA_HOST", "http://localhost:5601")
 
 
 def check_elasticsearch():
@@ -40,26 +39,6 @@ def check_elasticsearch():
         return False
 
 
-def check_kibana():
-    """Check Kibana status."""
-    print("\n── Kibana ──")
-    try:
-        r = requests.get(f"{KIBANA_HOST}/api/status", timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            status = data.get("status", {}).get("overall", {}).get("level", "unknown")
-            icon = "🟢" if status == "available" else "🟡"
-            print(f"  {icon} Status: {status}")
-            return True
-        elif r.status_code == 401:
-            print(f"  🟡 Kibana is up (auth required — this is expected)")
-            return True
-        else:
-            print(f"  🔴 HTTP {r.status_code}")
-            return False
-    except Exception as e:
-        print(f"  🔴 Not reachable: {e}")
-        return False
 
 
 def check_logstash():
@@ -134,7 +113,6 @@ if __name__ == "__main__":
 
     results = {
         "Elasticsearch": check_elasticsearch(),
-        "Kibana": check_kibana(),
         "Logstash": check_logstash(),
         "Wazuh Manager": check_wazuh(),
         "Indexed Docs": check_indexed_docs(),

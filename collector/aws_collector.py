@@ -190,10 +190,10 @@ class GuardDutyCollector:
 
 # ── Main collection run ──────────────────────────────────────
 
-def run_collection():
+def run_collection(lookback: int = POLL_MINUTES):
     """Run one full collection cycle: CloudTrail + GuardDuty → Elasticsearch."""
     log.info("=" * 60)
-    log.info("  AWS Cloud Log Collector — starting run")
+    log.info(f"  AWS Cloud Log Collector — starting run (lookback: {lookback}m)")
     log.info("=" * 60)
 
     es = get_es_client()
@@ -211,14 +211,14 @@ def run_collection():
     # Collect CloudTrail
     try:
         ct = CloudTrailCollector()
-        all_events.extend(ct.collect())
+        all_events.extend(ct.collect(lookback_minutes=lookback))
     except Exception as e:
         log.error(f"CloudTrail collector error: {e}")
 
     # Collect GuardDuty
     try:
         gd = GuardDutyCollector()
-        all_events.extend(gd.collect())
+        all_events.extend(gd.collect(lookback_minutes=lookback))
     except Exception as e:
         log.error(f"GuardDuty collector error: {e}")
 
@@ -230,4 +230,6 @@ def run_collection():
 
 
 if __name__ == "__main__":
-    run_collection()
+    import sys
+    lookback = int(sys.argv[1]) if len(sys.argv) > 1 else POLL_MINUTES
+    run_collection(lookback)

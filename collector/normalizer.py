@@ -65,7 +65,7 @@ class CloudTrailNormalizer:
             cloud_resource = None
             if resources:
                 cloud_resource = resources[0].get("ARN") or resources[0].get("resourceName")
-            elif "requestParameters" in raw:
+            elif raw.get("requestParameters"):
                 params = raw["requestParameters"]
                 cloud_resource = (
                     params.get("bucketName")
