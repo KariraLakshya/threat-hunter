@@ -1,0 +1,14 @@
+# Handle line endings automatically for files detected as text 
+# and leave all files detected as binary untouched.
+* text=auto
+
+# Declare files that will always have LF line endings on checkout.
+# Use this for scripts that must run on Unix/Linux systems.
+*.sh text eol=lf
+*.js text eol=lf
+
+# Declare files that will always have CRLF line endings on checkout.
+# Use this for Windows-specific files like batch scripts.
+*.bat text eol=crlf
+# Denote all files in the 'docs' directory as text and ensure they have LF line endings.
+docs/* text eol=lf
