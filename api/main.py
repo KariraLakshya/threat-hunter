@@ -24,7 +24,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from elasticsearch import Elasticsearch
-
+import re as _re
+from datetime import datetime as _dt, timezone as _tz
+import re
+from pathlib import Path
 load_dotenv()
 log = logging.getLogger("api")
 
@@ -181,8 +184,266 @@ def health_check():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "services": results,
     }
+def _parse_docker_uptime(started_at: str) -> str:
+    """Convert Docker's StartedAt ISO string to a human-readable uptime."""
+    try:
+        start = _dt.fromisoformat(started_at.replace("Z", "+00:00"))
+        delta = _dt.now(_tz.utc) - start
+        total = int(delta.total_seconds())
+        days, rem = divmod(total, 86400)
+        hours, rem = divmod(rem, 3600)
+        mins = rem // 60
+        if days:
+            return f"{days}d {hours}h {mins}m"
+        if hours:
+            return f"{hours}h {mins}m"
+        return f"{mins}m"
+    except Exception:
+        return "–"
 
 
+@app.get("/docker-status")
+def docker_status():
+    """
+    Return real-time status for all Docker containers on the host.
+    Uses the Docker SDK (unix socket or tcp — same as `docker ps`).
+    Falls back gracefully if Docker is not accessible.
+    """
+    try:
+        import docker  # type: ignore
+        client = docker.from_env()
+        containers = client.containers.list(all=True)
+
+        result = []
+        for ct in containers:
+            ct.reload()  # refresh attrs
+            attrs      = ct.attrs
+            state      = attrs.get("State", {})
+            started_at = state.get("StartedAt", "")
+            status     = state.get("Status", "unknown")       # running / exited / …
+            health     = state.get("Health", {}).get("Status", "") or ""   # healthy / starting / …
+
+            # Short image name (strip digest/sha)
+            image_tag = ""
+            try:
+                tags = ct.image.tags
+                image_tag = tags[0] if tags else ct.image.short_id
+            except Exception:
+                image_tag = "unknown"
+
+            result.append({
+                "name":   ct.name,
+                "status": status,
+                "state":  health or status,
+                "uptime": _parse_docker_uptime(started_at) if status == "running" else "–",
+                "image":  image_tag,
+            })
+
+        return {
+            "containers":  result,
+            "fetched_at":  _dt.now(_tz.utc).isoformat(),
+        }
+
+    except ImportError:
+        raise HTTPException(
+            status_code=501,
+            detail="Docker SDK not installed. Run: pip install docker"
+        )
+    except Exception as e:
+        log.warning(f"[docker-status] {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot connect to Docker daemon: {e}"
+        )
+# ── Pydantic request models ───────────────────────────────────
+
+class SlackConfigRequest(BaseModel):
+    webhook_url: str
+
+class EmailConfigRequest(BaseModel):
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str
+    smtp_pass: str
+    alert_email: str
+
+class SaveIntegrationsRequest(BaseModel):
+    slack_webhook:  str = ""
+    smtp_host:      str = "smtp.gmail.com"
+    smtp_port:      int = 587
+    smtp_user:      str = ""
+    smtp_pass:      str = ""
+    alert_email:    str = ""
+    routing:        dict = {}   # {"critical":{"slack":true,"email":true}, …}
+
+
+# ── Helper: patch a key=value line in .env ────────────────────
+
+def _env_path() -> Path:
+    """Resolve .env relative to this file (repo root)."""
+    return Path(__file__).parent.parent / ".env"
+
+
+def _upsert_env(key: str, value: str) -> None:
+    """Write or update a KEY=value line in .env without clobbering other keys."""
+    path = _env_path()
+    if not path.exists():
+        path.write_text("")
+    text = path.read_text()
+    pattern = re.compile(rf"^{re.escape(key)}=.*$", re.MULTILINE)
+    new_line = f'{key}="{value}"'
+    if pattern.search(text):
+        text = pattern.sub(new_line, text)
+    else:
+        text = text.rstrip("\n") + f"\n{new_line}\n"
+    path.write_text(text)
+
+
+# ── Test Slack ────────────────────────────────────────────────
+
+@app.post("/integrations/test-slack")
+def test_slack(req: SlackConfigRequest):
+    """
+    Send a real test message to the provided Slack webhook.
+    Uses the same payload format as the response engine.
+    """
+    import requests as _requests
+    if not req.webhook_url.startswith("https://hooks.slack.com/"):
+        raise HTTPException(status_code=400, detail="Invalid Slack webhook URL")
+
+    payload = {
+        "attachments": [{
+            "color": "#36a64f",
+            "title": "🔐 [TEST] Threat Hunter — Connection Verified",
+            "text": "Your Slack integration is working correctly. Alerts will appear here when incidents are detected.",
+            "fields": [
+                {"title": "Source",   "value": "Autonomous Threat Hunter", "short": True},
+                {"title": "Severity", "value": "TEST",                      "short": True},
+            ],
+            "footer": "Autonomous Threat Hunter · test message",
+            "ts": int(__import__("time").time()),
+        }]
+    }
+    try:
+        r = _requests.post(req.webhook_url, json=payload, timeout=8)
+        if r.status_code == 200 and r.text == "ok":
+            return {"ok": True, "detail": "Test message delivered to Slack"}
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Slack returned {r.status_code}: {r.text}"
+            )
+    except _requests.exceptions.ConnectionError:
+        raise HTTPException(status_code=502, detail="Could not reach Slack — check network")
+    except _requests.exceptions.Timeout:
+        raise HTTPException(status_code=504, detail="Slack webhook timed out")
+
+
+# ── Test Email ────────────────────────────────────────────────
+
+@app.post("/integrations/test-email")
+def test_email(req: EmailConfigRequest):
+    """
+    Send a real test email via SMTP (Gmail app-password or any SMTP).
+    Uses the same STARTTLS flow as response_engine.send_email().
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    if not req.smtp_user or not req.smtp_pass or not req.alert_email:
+        raise HTTPException(status_code=400, detail="smtp_user, smtp_pass and alert_email are required")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "[TEST] Threat Hunter — Email Alert Verified"
+    msg["From"]    = req.smtp_user
+    msg["To"]      = req.alert_email
+
+    html = """
+    <html><body style="font-family:monospace;background:#0a0a0a;color:#d4d4d4;padding:24px">
+    <h2 style="color:#22c55e">✅ Email integration working</h2>
+    <p>Your Threat Hunter email alerts are configured correctly.</p>
+    <p>Incident reports will be delivered here when the AI agent detects threats.</p>
+    <hr style="border-color:#333"/>
+    <p style="color:#666;font-size:12px">Autonomous Threat Hunter · test message</p>
+    </body></html>
+    """
+    msg.attach(MIMEText(html, "html"))
+
+    try:
+        with smtplib.SMTP(req.smtp_host, req.smtp_port, timeout=10) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(req.smtp_user, req.smtp_pass)
+            server.send_message(msg)
+        return {"ok": True, "detail": f"Test email sent to {req.alert_email}"}
+    except smtplib.SMTPAuthenticationError:
+        raise HTTPException(
+            status_code=401,
+            detail="SMTP authentication failed — for Gmail use an App Password, not your account password"
+        )
+    except smtplib.SMTPConnectError:
+        raise HTTPException(status_code=502, detail=f"Cannot connect to {req.smtp_host}:{req.smtp_port}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Save config to .env ───────────────────────────────────────
+
+@app.post("/integrations/save")
+def save_integrations(req: SaveIntegrationsRequest):
+    """
+    Persist Slack webhook + SMTP config into the .env file so the
+    response engine picks them up on next restart (or hot-reload).
+    Routing rules are stored as a JSON string under ALERT_ROUTING.
+    """
+    updates: dict[str, str] = {}
+
+    if req.slack_webhook:
+        updates["SLACK_WEBHOOK"] = req.slack_webhook
+    if req.smtp_host:
+        updates["SMTP_HOST"] = req.smtp_host
+    if req.smtp_port:
+        updates["SMTP_PORT"] = str(req.smtp_port)
+    if req.smtp_user:
+        updates["SMTP_USER"] = req.smtp_user
+    if req.smtp_pass:
+        updates["SMTP_PASS"] = req.smtp_pass
+    if req.alert_email:
+        updates["ALERT_EMAIL"] = req.alert_email
+    if req.routing:
+        import json as _json
+        updates["ALERT_ROUTING"] = _json.dumps(req.routing)
+
+    try:
+        for key, val in updates.items():
+            _upsert_env(key, val)
+        # Also update os.environ so response_engine picks up changes immediately
+        # (without needing a server restart)
+        for key, val in updates.items():
+            os.environ[key] = val
+        return {"ok": True, "updated": list(updates.keys())}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write .env: {e}")
+
+
+# ── Read current config (for pre-filling the form) ───────────
+
+@app.get("/integrations/config")
+def get_integrations_config():
+    """
+    Return current integration config from environment.
+    Passwords are masked — never sent in plaintext.
+    """
+    return {
+        "slack_webhook":  os.getenv("SLACK_WEBHOOK", ""),
+        "smtp_host":      os.getenv("SMTP_HOST", "smtp.gmail.com"),
+        "smtp_port":      int(os.getenv("SMTP_PORT", "587")),
+        "smtp_user":      os.getenv("SMTP_USER", ""),
+        "smtp_pass_set":  bool(os.getenv("SMTP_PASS", "")),   # true/false only — never expose password
+        "alert_email":    os.getenv("ALERT_EMAIL", ""),
+        "routing":        __import__("json").loads(os.getenv("ALERT_ROUTING", "{}")),
+    }
 @app.post("/investigate")
 async def investigate_endpoint(req: InvestigateRequest, background_tasks: BackgroundTasks):
     """
