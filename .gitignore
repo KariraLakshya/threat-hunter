@@ -12,6 +12,7 @@ data/
 scenarios/
 *.json
 !package.json
+!grafana/provisioning/dashboards/soc-overview.json
 
 # Logs
 *.log
