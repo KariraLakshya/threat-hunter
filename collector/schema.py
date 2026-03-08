@@ -80,6 +80,9 @@ class EventType:
     LARGE_DATA_TRANSFER = "large_data_transfer"
     PORT_SCAN = "port_scan"
     CREDENTIAL_FILE_ACCESS = "credential_file_access"
+    FILE_DROP = "file_drop"
+    CRON_MODIFIED = "cron_modified"
+    LATERAL_MOVEMENT_SSH = "lateral_movement_ssh"
     # Cloud
     CLOUD_CONSOLE_LOGIN = "cloud_console_login"
     IAM_PRIVILEGE_ESCALATION = "iam_privilege_escalation"

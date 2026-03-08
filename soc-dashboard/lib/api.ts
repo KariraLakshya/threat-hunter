@@ -69,8 +69,8 @@ export interface HealthResponse {
   timestamp: string
   services: {
     elasticsearch: { status: string; ok: boolean; error?: string }
-    database:       { status: string; ok: boolean; error?: string }
-    redis:          { status: string; ok: boolean; error?: string }
+    database: { status: string; ok: boolean; error?: string }
+    redis: { status: string; ok: boolean; error?: string }
   }
 }
 
@@ -126,4 +126,21 @@ export const api = {
 
   sandboxCheck: (body: { type: "ip" | "hash" | "url"; value: string }) =>
     apiFetch<SandboxResponse>("/sandbox/check", { method: "POST", body: JSON.stringify(body) }),
+
+  calderaOps: () =>
+    apiFetch<CalderaTrackerResponse>("/caldera/operations"),
+}
+
+export interface CalderaTrackerResponse {
+  active: boolean
+  name?: string
+  start?: string
+  chain?: {
+    id: string
+    technique_id: string
+    technique_name: string
+    status: string
+    command: string
+    finish: string
+  }[]
 }

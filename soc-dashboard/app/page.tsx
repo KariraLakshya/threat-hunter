@@ -17,17 +17,17 @@ function ApiError({ message }: { message: string }) {
 }
 
 export default function OverviewPage() {
-  const { data: stats,   loading: sl, error: se, refetch: sr } = useStats(15_000)
-  const { data: health,  loading: hl, error: he }               = useHealth(30_000)
-  const { data: recent,  loading: rl, error: re, refetch: rr }  = useIncidents(5, 15_000)
+  const { data: stats, loading: sl, error: se, refetch: sr } = useStats(15_000)
+  const { data: health, loading: hl, error: he } = useHealth(30_000)
+  const { data: recent, loading: rl, error: re, refetch: rr } = useIncidents(5, 15_000)
 
   const incidents = recent?.incidents ?? []
 
   const kpis = [
-    { label: "Total Incidents",   value: stats?.total,                      icon: ShieldAlert, color: "text-cyan-400",    glow: "shadow-[0_0_12px_rgba(34,211,238,0.3)]" },
-    { label: "Critical",          value: stats?.by_severity?.critical ?? 0, icon: Siren,       color: "text-red-400",     glow: "shadow-[0_0_12px_rgba(239,68,68,0.3)]" },
-    { label: "High",              value: stats?.by_severity?.high ?? 0,     icon: Brain,       color: "text-orange-400",  glow: "shadow-[0_0_12px_rgba(249,115,22,0.3)]" },
-    { label: "Cross-Environment", value: stats?.cross_environment ?? 0,     icon: Globe,       color: "text-violet-400",  glow: "shadow-[0_0_12px_rgba(167,139,250,0.3)]" },
+    { label: "Total Incidents", value: stats?.total, icon: ShieldAlert, color: "text-cyan-400", glow: "shadow-[0_0_12px_rgba(34,211,238,0.3)]" },
+    { label: "Critical", value: stats?.by_severity?.critical ?? 0, icon: Siren, color: "text-red-400", glow: "shadow-[0_0_12px_rgba(239,68,68,0.3)]" },
+    { label: "High", value: stats?.by_severity?.high ?? 0, icon: Brain, color: "text-orange-400", glow: "shadow-[0_0_12px_rgba(249,115,22,0.3)]" },
+    { label: "Cross-Environment", value: stats?.cross_environment ?? 0, icon: Globe, color: "text-violet-400", glow: "shadow-[0_0_12px_rgba(167,139,250,0.3)]" },
   ]
 
   const sevColor: Record<string, string> = {
@@ -37,18 +37,18 @@ export default function OverviewPage() {
 
   const sevBars = [
     { label: "Critical", value: stats?.by_severity?.critical ?? 0, color: "bg-red-500" },
-    { label: "High",     value: stats?.by_severity?.high     ?? 0, color: "bg-orange-500" },
-    { label: "Medium",   value: stats?.by_severity?.medium   ?? 0, color: "bg-yellow-500" },
-    { label: "Low",      value: stats?.by_severity?.low      ?? 0, color: "bg-emerald-500" },
+    { label: "High", value: stats?.by_severity?.high ?? 0, color: "bg-orange-500" },
+    { label: "Medium", value: stats?.by_severity?.medium ?? 0, color: "bg-yellow-500" },
+    { label: "Low", value: stats?.by_severity?.low ?? 0, color: "bg-emerald-500" },
   ]
   const maxBar = Math.max(...sevBars.map(b => b.value), 1)
 
   const svcs = health?.services
     ? [
-        { name: "Elasticsearch", ok: health.services.elasticsearch.ok, status: health.services.elasticsearch.status },
-        { name: "SQLite DB",     ok: health.services.database.ok,       status: health.services.database.status },
-        { name: "Redis",         ok: health.services.redis.ok,          status: health.services.redis.status },
-      ]
+      { name: "Elasticsearch", ok: health.services.elasticsearch.ok, status: health.services.elasticsearch.status },
+      { name: "SQLite DB", ok: health.services.database.ok, status: health.services.database.status },
+      { name: "Redis", ok: health.services.redis.ok, status: health.services.redis.status },
+    ]
     : []
 
   return (
@@ -88,7 +88,7 @@ export default function OverviewPage() {
         <div className="col-span-2 rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
           <p className="text-sm font-semibold text-zinc-300 mb-4">Incidents by Severity</p>
           {sl ? (
-            <div className="space-y-3">{[1,2,3,4].map(i => <Skeleton key={i} className="h-4 w-full" />)}</div>
+            <div className="space-y-3">{[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-4 w-full" />)}</div>
           ) : (
             <div className="space-y-3">
               {sevBars.map(bar => (
@@ -110,7 +110,7 @@ export default function OverviewPage() {
             <Activity size={14} className="text-cyan-400" /> System Health
           </p>
           {hl ? (
-            <div className="space-y-2">{[1,2,3].map(i => <Skeleton key={i} className="h-10 w-full" />)}</div>
+            <div className="space-y-2">{[1, 2, 3].map(i => <Skeleton key={i} className="h-10 w-full" />)}</div>
           ) : (
             <div className="space-y-2">
               {svcs.map(svc => (
@@ -131,13 +131,13 @@ export default function OverviewPage() {
         </div>
       </div>
 
-      {/* Recent incidents */}
+      {/* Incidents Layout */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5">
         <div className="flex items-center justify-between mb-4">
           <p className="text-sm font-semibold text-zinc-300">Recent Incidents</p>
           <button onClick={rr} className="text-zinc-600 hover:text-zinc-400 transition-colors"><RefreshCw size={12} /></button>
         </div>
-        {rl && <div className="space-y-2">{[1,2,3].map(i => <Skeleton key={i} className="h-10 w-full" />)}</div>}
+        {rl && <div className="space-y-2">{[1, 2, 3].map(i => <Skeleton key={i} className="h-10 w-full" />)}</div>}
         {!rl && incidents.length === 0 && (
           <p className="text-xs text-zinc-600">{re ? "API unreachable" : "No incidents yet. Run an investigation."}</p>
         )}

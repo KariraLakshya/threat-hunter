@@ -704,17 +704,20 @@ def _run_investigation(lookback_minutes: int, user_filter: Optional[str]):
 
         raw = es.search(index="security-*", body=query)
         hits = raw["hits"]["hits"]
-        log.info(f"[API] Found {len(hits)} raw events in ES")
+        print(f"[DEBUG] Found {len(hits)} raw documents in ES since {since}")
 
         events = []
         for hit in hits:
             try:
-                events.append(_adapt_logstash_doc(hit["_source"]))
+                ev = _adapt_logstash_doc(hit["_source"])
+                if ev:
+                    events.append(ev)
             except Exception as e:
                 log.debug(f"[API] Skipping doc {hit.get('_id')}: {e}")
 
-        events = [e for e in events if e is not None]
-        log.info(f"[API] {len(events)} events mapped to NormalizedEvent")
+        print(f"[DEBUG] Adapted {len(events)} events to NormalizedEvent")
+        if events:
+            print(f"[DEBUG] First event type: {events[0].event_type}, user: {events[0].user}, ts: {events[0].timestamp}")
 
         if not events:
             log.info("[API] No events in window — nothing to investigate")
@@ -722,6 +725,7 @@ def _run_investigation(lookback_minutes: int, user_filter: Optional[str]):
 
         # Correlate
         sec_events = engine.correlate(events)
+        print(f"[DEBUG] Correlated into {len(sec_events)} SecurityEvents")
         if not sec_events:
             log.info("[API] No events exceeded thresholds")
             return
@@ -729,6 +733,7 @@ def _run_investigation(lookback_minutes: int, user_filter: Optional[str]):
         # MITRE map
         mapped = mapper.map_events(sec_events)
         chain = mapper.build_attack_chain(mapped)
+        print(f"[DEBUG] Built attack chain with {len(chain)} steps")
 
         # Sandbox: check IPs
         all_ips = list({step["source_ip"] for step in chain if step.get("source_ip")})
@@ -774,6 +779,8 @@ def list_incidents(limit: int = 50, status: Optional[str] = None):
         incidents = []
         for row in rows:
             d = dict(zip(columns, row))
+            if "severity" in d:
+                d["severity"] = d["severity"].lower()
             for field in ("environments", "actions", "conclusion", "chain"):
                 if d.get(field):
                     try:
@@ -801,6 +808,8 @@ def get_incident(incident_id: str):
         columns = ["incident_id", "timestamp", "severity", "is_attack", "user",
                    "environments", "cross_env", "summary", "actions", "status", "conclusion", "chain"]
         d = dict(zip(columns, row))
+        if "severity" in d:
+            d["severity"] = d["severity"].lower()
         for field in ("environments", "actions", "conclusion", "chain"):
             if d.get(field):
                 try:
@@ -870,16 +879,81 @@ def stats():
         ).fetchone()[0]
         total = conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
         conn.close()
+        normalized_severity = {}
+        for sev, count in rows:
+            normalized_severity[sev.lower()] = normalized_severity.get(sev.lower(), 0) + count
+
         return {
             "total": total,
-            "by_severity": dict(rows),
+            "by_severity": normalized_severity,
             "cross_environment": cross,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+CALDERA_URL = "http://localhost:8888"
+CALDERA_HEADERS = {"KEY": "9yhqWNFrVcnhUE9k37GCZ_wEPQnW4L1ppmiEP7-puf8", "Content_Type": "application/json"}
+
+@app.get("/caldera/operations")
+def get_caldera_operations():
+    """Proxy live operations from Caldera (Legacy)."""
+    try:
+        import requests
+        import base64
+        resp = requests.get(f"{CALDERA_URL}/api/v2/operations", headers=CALDERA_HEADERS, timeout=5)
+        if resp.status_code != 200:
+            return {"active": False, "chain": []}
+            
+        ops = resp.json()
+        active_op = next((o for o in ops if o.get("state") == "running"), None)
+        if not active_op:
+            return {"active": False, "chain": []}
+
+        # Fetch detailed chain for the active operation
+        op_id = active_op["id"]
+        chain_resp = requests.get(f"{CALDERA_URL}/api/v2/operations/{op_id}/links", headers=CALDERA_HEADERS, timeout=5)
+        links = chain_resp.json()
+        
+        chain = []
+        for link in links:
+            try:
+                cmd = base64.b64decode(link.get("command", "")).decode("utf-8") if link.get("command") else ""
+            except Exception:
+                cmd = link.get("command", "")
+            
+            chain.append({
+                "id": link.get("id"),
+                "technique_id": link.get("ability", {}).get("technique_id"),
+                "status": "Success" if link.get("status") == 0 else "Failed" if link.get("status") > 0 else "Running/Timeout",
+                "command": cmd,
+                "finish": link.get("finish", "Pending...")
+            })
+
+        return {"active": True, "name": active_op.get("name"), "chain": chain}
+    except Exception:
+        return {"active": False, "chain": []}
+
+@app.get("/attack/logs")
+def get_attack_logs():
+    """Reads the raw Metasploit attack log directly from the sandbox directory."""
+    log_path = os.path.join("sandbox", "metasploit", "attack.log")
+    if not os.path.exists(log_path):
+        return {"logs": "Dashboard: Waiting for attack to start..."}
+    
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+            # Filter out noisy Ruby/Gem deprecation warnings
+            filtered = [l for l in lines if "Gem::Platform.match" not in l and "deprecated" not in l]
+            content = "".join(filtered)
+            # Return last 5000 characters to prevent UI lag
+            return {"logs": content[-5000:]}
+    except Exception as e:
+        return {"logs": f"Error reading logs: {str(e)}"}
+
 """
 HOW TO APPLY THIS PATCH TO api/main.py
-=======================================
 
 STEP 1 — Find this line near the top of main.py:
     import os
