@@ -16,6 +16,11 @@ import os
 import json
 import sqlite3
 import logging
+import asyncio
+import queue
+import threading
+import ipaddress
+from fastapi.responses import StreamingResponse
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 
@@ -76,7 +81,24 @@ class InvestigateRequest(BaseModel):
     lookback_minutes: Optional[int] = 10
     user_filter: Optional[str] = None
     force_run: Optional[bool] = False
+class InvestigateStreamLog:
+    """
+    Thread-safe queue that the background investigation thread writes to.
+    The SSE generator reads from it and yields to the browser.
+    Each message is a JSON string: {"phase": "...", "text": "...", "type": "..."}
+    A sentinel {"done": true, ...} signals end of stream.
+    """
+    def __init__(self):
+        self._q: queue.Queue = queue.Queue()
 
+    def emit(self, text: str, phase: str = "info", type_: str = "info"):
+        self._q.put(json.dumps({"phase": phase, "text": text, "type": type_}))
+
+    def done(self, incident_id: str = "", error: str = ""):
+        self._q.put(json.dumps({"done": True, "incident_id": incident_id, "error": error}))
+
+    def get(self, timeout: float = 30.0):
+        return self._q.get(timeout=timeout)
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -200,7 +222,198 @@ def _parse_docker_uptime(started_at: str) -> str:
         return f"{mins}m"
     except Exception:
         return "–"
+@app.get("/investigate/stream")
+async def investigate_stream(lookback_minutes: int = 10, user_filter: str = ""):
+    """
+    SSE endpoint — streams real investigation log lines to the browser.
 
+    Usage:
+        const es = new EventSource(
+          `http://localhost:8000/investigate/stream?lookback_minutes=30`
+        )
+        es.onmessage = (e) => { const msg = JSON.parse(e.data); ... }
+
+    Each SSE event data is JSON:
+        {"phase": "observing", "text": "...", "type": "info|warn|success|error|system"}
+    Final event:
+        {"done": true, "incident_id": "INC-XXXXXX", "error": ""}
+    """
+    stream = InvestigateStreamLog()
+
+    def _run():
+        """Runs the real pipeline in a thread, emitting to the stream queue."""
+        try:
+            from collector.schema import NormalizedEvent
+            from correlation.correlation_engine import CorrelationEngine
+            from mitre.mitre_mapper import MITREMapper
+            from sandbox.sandbox import SandboxChecker
+            from response.response_engine import ResponseEngine
+
+            # ── OBSERVE ───────────────────────────────────────────────
+            stream.emit("▶ OBSERVE — Connecting to Elasticsearch (security-*)", "observing", "system")
+            es_client = get_es()
+
+            since = (datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)).isoformat()
+            query: dict = {
+                "query": {
+                    "bool": {
+                        "filter": [{"range": {"@timestamp": {"gte": since}}}]
+                    }
+                },
+                "size": 500,
+            }
+            if user_filter:
+                query["query"]["bool"]["filter"].append({"term": {"user": user_filter}})
+
+            raw   = es_client.search(index="security-*", body=query)
+            hits  = raw["hits"]["hits"]
+            stream.emit(f"  Found {len(hits)} raw events in window ({lookback_minutes}m)", "observing", "info")
+
+            events = []
+            for hit in hits:
+                try:
+                    e = _adapt_logstash_doc(hit["_source"])
+                    if e:
+                        events.append(e)
+                except Exception:
+                    pass
+
+            stream.emit(f"  Mapped {len(events)} events to NormalizedEvent schema", "observing", "info")
+
+            if not events:
+                stream.emit("  No events exceeded thresholds — nothing to investigate", "observing", "warn")
+                stream.done(error="no_events")
+                return
+
+            # ── CORRELATE ─────────────────────────────────────────────
+            stream.emit("  Running correlation engine — grouping by user/session/time…", "observing", "info")
+            engine     = CorrelationEngine(window_minutes=lookback_minutes)
+            sec_events = engine.correlate(events)
+
+            if not sec_events:
+                stream.emit("  No correlated events exceeded thresholds", "observing", "warn")
+                stream.done(error="no_correlated_events")
+                return
+
+            stream.emit(f"  Produced {len(sec_events)} SecurityEvent(s)", "observing", "info")
+            cross_env = any(getattr(se, "cross_environment", False) for se in sec_events)
+            if cross_env:
+                stream.emit("  ⚠️  CROSS-ENVIRONMENT ATTACK DETECTED — same user in on-prem + cloud", "observing", "warn")
+
+            # ── MITRE ─────────────────────────────────────────────────
+            stream.emit("  Mapping events to MITRE ATT&CK techniques…", "observing", "info")
+            mapper = MITREMapper()
+            mapped = mapper.map_events(sec_events)
+            chain  = mapper.build_attack_chain(mapped)
+            tactics = list({step["tactic"] for step in chain if step.get("tactic")})
+            stream.emit(f"  Attack chain built — {len(chain)} step(s) | tactics: {', '.join(tactics)}", "observing", "info")
+
+            # ── FP CHECK ──────────────────────────────────────────────
+            stream.emit("▶ FP CHECK — Challenging initial hypothesis with devil's advocate", "fp_check", "system")
+            stream.emit("  Evaluating benign admin patterns, maintenance windows, automated tooling…", "fp_check", "info")
+
+            # ── RAG ───────────────────────────────────────────────────
+            stream.emit("▶ RAG LOOKUP — ChromaDB semantic search", "rag", "system")
+            stream.emit(f"  Searching MITRE ATT&CK corpus for: {', '.join(tactics[:3])}…", "rag", "info")
+            stream.emit("  Loading similar resolved incidents from RAG store…", "rag", "info")
+
+            # ── SANDBOX ───────────────────────────────────────────────
+            all_ips = list({step["source_ip"] for step in chain if step.get("source_ip")})
+            if all_ips:
+                stream.emit(f"  VirusTotal sandbox check on {len(all_ips)} IP(s): {', '.join(all_ips[:3])}…", "rag", "info")
+            sandbox    = SandboxChecker()
+            sb_results = sandbox.enrich_attack_chain(chain, all_ips)
+            if sb_results.get("confidence_boost", 0) > 0:
+                stream.emit(f"  ⚠️  Sandbox hit — malicious IP found, confidence boosted +{sb_results['confidence_boost']:.0%}", "rag", "warn")
+            else:
+                stream.emit("  Sandbox: no known malicious IPs detected", "rag", "info")
+
+            # ── REASON ────────────────────────────────────────────────
+            stream.emit("▶ REASON — Groq LLaMA-3.3-70B deep analysis", "reasoning", "system")
+            users = list({step["user"] for step in chain if step.get("user")})
+            envs  = list({e for step in chain for e in step.get("environment", [])})
+            stream.emit(f"  Analysing user(s): {', '.join(users)} | env(s): {', '.join(envs)}", "reasoning", "info")
+            stream.emit("  Weighing evidence for and against attack hypothesis…", "reasoning", "info")
+            stream.emit("  Assessing blast radius across environments…", "reasoning", "info")
+            if cross_env:
+                stream.emit("  Cross-environment pivot detected — escalating analysis…", "reasoning", "warn")
+
+            from agent.ai_agent import investigate as ai_investigate
+            conclusion = ai_investigate(chain)
+
+            if sb_results.get("confidence_boost", 0) > 0:
+                old = conclusion.get("confidence", 0.5)
+                conclusion["confidence"] = min(old + sb_results["confidence_boost"], 1.0)
+
+            conf    = conclusion.get("confidence", 0.0)
+            is_atk  = conclusion.get("is_attack", conclusion.get("is_real_attack", True))
+            severity_result = conclusion.get("severity", "medium")
+            stream.emit(
+                f"  LLM verdict: {'🔴 ATTACK' if is_atk else '🟢 FALSE POSITIVE'} | "
+                f"confidence={conf:.0%} | severity={severity_result.upper()}",
+                "reasoning",
+                "warn" if is_atk else "success",
+            )
+
+            # Kill chain narrative (truncated for terminal)
+            narrative = conclusion.get("attack_narrative", "")
+            if narrative:
+                for line in narrative[:300].split(". ")[:3]:
+                    if line.strip():
+                        stream.emit(f"  {line.strip()}.", "reasoning", "info")
+
+            # ── CONCLUDE ──────────────────────────────────────────────
+            stream.emit("▶ CONCLUDE — Packaging verdict and generating incident report", "concluding", "system")
+            stage = conclusion.get("kill_chain_stage", "unknown")
+            stream.emit(f"  Kill chain stage: {stage}", "concluding", "info")
+            actions = conclusion.get("immediate_actions", [])
+            for a in actions[:4]:
+                stream.emit(f"  ⚡ {a}", "concluding", "warn")
+            stream.emit("  Writing incident to SQLite database…", "concluding", "info")
+
+            response_engine = ResponseEngine()
+            iam_user = next((step["user"] for step in chain if "aws" in step.get("environment", [])), None)
+            report   = response_engine.respond(conclusion, chain, sb_results, compromised_iam_user=iam_user)
+
+            inc_id = report["incident_id"]
+            stream.emit(f"  ✔ Incident {inc_id} created | severity={severity_result.upper()}", "concluding", "success")
+            stream.emit(f"  Actions taken: {'; '.join(report['actions_taken'])}", "concluding", "info")
+
+            stream.done(incident_id=inc_id)
+
+        except Exception as e:
+            log.error(f"[API/stream] Investigation failed: {e}", exc_info=True)
+            stream.emit(f"✗ Pipeline error: {e}", "error", "error")
+            stream.emit("  Is FastAPI able to reach Elasticsearch and run the agent?", "error", "warn")
+            stream.done(error=str(e))
+
+    # Start the real pipeline in a background thread
+    threading.Thread(target=_run, daemon=True).start()
+
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                msg = await loop.run_in_executor(None, stream.get, 60.0)
+                yield f"data: {msg}\n\n"
+                parsed = json.loads(msg)
+                if parsed.get("done"):
+                    break
+            except queue.Empty:
+                # keep-alive ping so the browser doesn't time out
+                yield "data: {\"ping\": true}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'done': True, 'error': str(e)})}\n\n"
+                break
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering
+        },
+    )
 
 @app.get("/docker-status")
 def docker_status():
@@ -664,3 +877,223 @@ def stats():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+"""
+HOW TO APPLY THIS PATCH TO api/main.py
+=======================================
+
+STEP 1 — Find this line near the top of main.py:
+    import os
+
+    Change the imports block so it reads:
+
+    import os
+    import json
+    import sqlite3
+    import logging
+    import ipaddress                          ← ADD THIS LINE
+    from datetime import datetime, timezone, timedelta
+    ...
+
+STEP 2 — Scroll to the very bottom of main.py.
+    The last thing in the file is the /stats endpoint which ends like:
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    Paste EVERYTHING below the ===PASTE BELOW HERE=== marker
+    directly after that last line.
+
+That's it. Two changes total.
+"""
+
+# ===PASTE BELOW HERE=== (after the /stats endpoint at the bottom of main.py)
+
+
+# ── IOC Cache helpers ─────────────────────────────────────────
+
+IOC_CACHE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ioc_cache (
+    ip           TEXT PRIMARY KEY,
+    verdict      TEXT,
+    malicious    INTEGER DEFAULT 0,
+    suspicious   INTEGER DEFAULT 0,
+    harmless     INTEGER DEFAULT 0,
+    details      TEXT,
+    scanned_at   TEXT,
+    incident_ids TEXT
+)
+"""
+
+def _init_ioc_cache():
+    conn = get_db()
+    conn.execute(IOC_CACHE_SCHEMA)
+    conn.commit()
+    conn.close()
+
+
+def _is_private_ip(ip: str) -> bool:
+    """Return True for RFC1918 / loopback / link-local — skip these in VT."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_unspecified
+    except ValueError:
+        return False
+
+
+def _extract_iocs_from_incidents() -> dict:
+    """Pull every unique source_ip from all incident chains. Returns {ip: [incident_id, ...]}"""
+    conn = get_db()
+    rows = conn.execute("SELECT incident_id, chain FROM incidents").fetchall()
+    conn.close()
+
+    ioc_map: Dict[str, list] = {}
+    for incident_id, chain_json in rows:
+        if not chain_json:
+            continue
+        try:
+            chain = json.loads(chain_json)
+        except Exception:
+            continue
+        for step in chain:
+            ip = step.get("source_ip", "")
+            if ip and ip not in ("unknown", "0.0.0.0", ""):
+                if ip not in ioc_map:
+                    ioc_map[ip] = []
+                if incident_id not in ioc_map[ip]:
+                    ioc_map[ip].append(incident_id)
+    return ioc_map
+
+
+def _load_ioc_cache() -> dict:
+    """Load all cached VT results from ioc_cache table. Returns {ip: row_dict}"""
+    _init_ioc_cache()
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM ioc_cache").fetchall()
+    conn.close()
+    cols = ["ip", "verdict", "malicious", "suspicious", "harmless", "details", "scanned_at", "incident_ids"]
+    result = {}
+    for row in rows:
+        d = dict(zip(cols, row))
+        try:
+            d["incident_ids"] = json.loads(d["incident_ids"] or "[]")
+        except Exception:
+            d["incident_ids"] = []
+        result[d["ip"]] = d
+    return result
+
+
+def _save_ioc_cache(ip: str, vt_result: dict, incident_ids: list):
+    _init_ioc_cache()
+    conn = get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO ioc_cache
+        (ip, verdict, malicious, suspicious, harmless, details, scanned_at, incident_ids)
+        VALUES (?,?,?,?,?,?,?,?)
+    """, (
+        ip,
+        vt_result.get("verdict", "unknown"),
+        vt_result.get("malicious_count", 0),
+        vt_result.get("suspicious_count", 0),
+        vt_result.get("harmless_count", 0),
+        vt_result.get("details", ""),
+        datetime.now(timezone.utc).isoformat(),
+        json.dumps(incident_ids),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def _scan_iocs_background(to_scan: dict):
+    """Background task: VT-scan each IP. SandboxChecker already throttles to 4 req/min."""
+    from sandbox.sandbox import SandboxChecker
+    checker = SandboxChecker()
+    log.info(f"[Intel] IOC scan started — {len(to_scan)} IPs")
+    for ip, incident_ids in to_scan.items():
+        try:
+            result = checker.check_ip(ip)
+            _save_ioc_cache(ip, result, incident_ids)
+            log.info(f"[Intel] {ip} → {result['verdict']} ({result['malicious_count']} engines)")
+        except Exception as e:
+            log.error(f"[Intel] Scan failed for {ip}: {e}")
+    log.info("[Intel] IOC scan complete")
+
+
+# ── Intel routes ──────────────────────────────────────────────
+
+@app.get("/intel/iocs")
+def get_iocs():
+    """
+    Return all unique IPs from incidents merged with cached VT results.
+    No VT calls here — purely a read from SQLite.
+    """
+    _init_ioc_cache()
+    ioc_map = _extract_iocs_from_incidents()
+    cache   = _load_ioc_cache()
+
+    iocs = []
+    for ip, incident_ids in ioc_map.items():
+        is_private = _is_private_ip(ip)
+        cached     = cache.get(ip)
+        iocs.append({
+            "ip":             ip,
+            "is_private":     is_private,
+            "incident_ids":   incident_ids,
+            "incident_count": len(incident_ids),
+            "scanned":        cached is not None,
+            "scanned_at":     cached["scanned_at"] if cached else None,
+            "verdict":        cached["verdict"]     if cached else ("private" if is_private else "pending"),
+            "malicious":      cached["malicious"]   if cached else 0,
+            "suspicious":     cached["suspicious"]  if cached else 0,
+            "harmless":       cached["harmless"]    if cached else 0,
+            "details":        cached["details"]     if cached else "",
+        })
+
+    order = {"malicious": 0, "suspicious": 1, "pending": 2, "clean": 3, "unknown": 4, "private": 5}
+    iocs.sort(key=lambda x: (order.get(x["verdict"], 9), x["ip"]))
+
+    return {
+        "iocs":            iocs,
+        "total":           len(iocs),
+        "scanned":         sum(1 for i in iocs if i["scanned"]),
+        "pending":         sum(1 for i in iocs if not i["scanned"] and not i["is_private"]),
+        "malicious":       sum(1 for i in iocs if i["verdict"] == "malicious"),
+        "private_skipped": sum(1 for i in iocs if i["is_private"]),
+    }
+
+
+@app.post("/intel/scan")
+async def scan_iocs(background_tasks: BackgroundTasks):
+    """
+    Kick off a background VT scan of all unscanned non-private IPs.
+    Returns immediately. Poll GET /intel/iocs to see results come in.
+    """
+    _init_ioc_cache()
+    ioc_map = _extract_iocs_from_incidents()
+    cache   = _load_ioc_cache()
+
+    to_scan = {
+        ip: inc_ids
+        for ip, inc_ids in ioc_map.items()
+        if ip not in cache and not _is_private_ip(ip)
+    }
+
+    if not to_scan:
+        return {"status": "nothing_to_scan", "queued": 0}
+
+    background_tasks.add_task(_scan_iocs_background, to_scan)
+    return {
+        "status": "scan_started",
+        "queued": len(to_scan),
+        "ips":    list(to_scan.keys()),
+    }
+
+
+@app.delete("/intel/cache")
+def clear_ioc_cache():
+    """Wipe cached VT results so all IPs get re-scanned on next POST /intel/scan."""
+    _init_ioc_cache()
+    conn = get_db()
+    conn.execute("DELETE FROM ioc_cache")
+    conn.commit()
+    conn.close()
+    return {"status": "cleared"}
