@@ -58,6 +58,24 @@ ON_PREM_MAP: Dict[str, Dict] = {
         "technique_name": "Network Service Discovery",
         "url": "https://attack.mitre.org/techniques/T1046/",
     },
+    EventType.FILE_DROP: {
+        "tactic": "Command and Control",
+        "technique": "T1105",
+        "technique_name": "Ingress Tool Transfer",
+        "url": "https://attack.mitre.org/techniques/T1105/",
+    },
+    EventType.CRON_MODIFIED: {
+        "tactic": "Persistence",
+        "technique": "T1053.003",
+        "technique_name": "Scheduled Task/Job: Cron",
+        "url": "https://attack.mitre.org/techniques/T1053/003/",
+    },
+    EventType.LATERAL_MOVEMENT_SSH: {
+        "tactic": "Lateral Movement",
+        "technique": "T1021.004",
+        "technique_name": "Remote Services: SSH",
+        "url": "https://attack.mitre.org/techniques/T1021/004/",
+    },
 }
 
 CLOUD_MAP: Dict[str, Dict] = {

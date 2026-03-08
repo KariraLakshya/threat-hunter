@@ -1,0 +1,6 @@
+filebeat.inputs:
+- type: log
+  paths:
+    - /var/ossec/logs/alerts/alerts.json
+output.logstash:
+  hosts: ["threat-hunter-logstash:5044"]

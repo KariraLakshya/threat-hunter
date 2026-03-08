@@ -7,9 +7,9 @@ export function useQuery<T>(
   deps: unknown[] = [],
   opts: { enabled?: boolean; refetchInterval?: number } = {}
 ) {
-  const [data, setData]       = useState<T | null>(null)
+  const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(opts.enabled !== false)
-  const [error, setError]     = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   const run = useCallback(async () => {
     if (opts.enabled === false) return
@@ -17,7 +17,7 @@ export function useQuery<T>(
     try { setData(await fetcher()) }
     catch (e) { setError(e instanceof Error ? e.message : "Request failed") }
     finally { setLoading(false) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps)
 
   useEffect(() => { run() }, [run])
@@ -31,7 +31,16 @@ export function useQuery<T>(
   return { data, loading, error, refetch: run }
 }
 
-export const useHealth    = (interval = 30_000) => useQuery(() => api.health(),           [], { refetchInterval: interval })
-export const useStats     = (interval = 15_000) => useQuery(() => api.stats(),            [], { refetchInterval: interval })
+export const useHealth = (interval = 30_000) => useQuery(() => api.health(), [], { refetchInterval: interval })
+export const useStats = (interval = 15_000) => useQuery(() => api.stats(), [], { refetchInterval: interval })
 export const useIncidents = (limit = 100, interval = 15_000) =>
   useQuery(() => api.incidents(limit), [limit], { refetchInterval: interval })
+
+export const useCalderaTracker = (interval = 2_000) =>
+  useQuery(() => api.calderaOps(), [], { refetchInterval: interval })
+
+export const useAttackLogs = (interval = 2_000) =>
+  useQuery(async () => {
+    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/attack/logs`)
+    return res.json()
+  }, [], { refetchInterval: interval })

@@ -1,0 +1,56 @@
+version: "3.8"
+
+# ═══════════════════════════════════════════════════════════
+#  Autonomous Threat Hunter — Attack Sandbox
+#
+#  Usage: docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
+#
+#  Networks:
+#    sandbox-net  (internal: true) — isolated, no internet
+#    threat-net   (bridged to main stack) — for Wazuh agent logs
+# ═══════════════════════════════════════════════════════════
+
+services:
+
+  # ── Attack Target (Ubuntu 22.04 + SSH + Wazuh Agent) ───────
+  attack-target:
+    build:
+      context: ./sandbox/attack-target
+      dockerfile: Dockerfile
+    container_name: attack-target
+    hostname: attack-target
+    environment:
+      - WAZUH_MANAGER=threat-hunter-wazuh
+      - WAZUH_REGISTRATION_SERVER=threat-hunter-wazuh
+      - WAZUH_AGENT_NAME=sandbox-target
+    networks:
+      - sandbox-net
+      - threat-net          # forwards Wazuh logs to wazuh-manager
+    ports:
+      - "2222:22"           # expose SSH for manual inspection
+    volumes:
+      - ./sandbox/attack-target/wazuh-ossec.conf:/var/ossec/etc/ossec.conf:ro
+    restart: "no"
+    depends_on:
+      - wazuh-manager
+
+  # ── Attack Runner (Original ATR Runner) ──────────────────────
+  attack-runner:
+    build:
+      context: ./sandbox/attack-runner
+      dockerfile: Dockerfile
+    container_name: attack-runner
+    hostname: attack-runner
+    networks:
+      - sandbox-net
+    volumes:
+      - ./scripts:/scripts
+    restart: "unless-stopped"
+
+networks:
+  sandbox-net:
+    driver: bridge
+    internal: true          # NO internet routing from sandbox containers
+    ipam:
+      config:
+        - subnet: 10.99.0.0/24

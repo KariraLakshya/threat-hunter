@@ -86,7 +86,7 @@ def save_incident(incident_id: str, conclusion: Dict, chain: List[Dict]) -> None
     """, (
         incident_id,
         datetime.now(timezone.utc).isoformat(),
-        conclusion.get("severity", "medium"),
+        conclusion.get("severity", "medium").lower(),
         int(conclusion.get("is_real_attack", True)),
         chain[0].get("user", "unknown") if chain else "unknown",
         json.dumps(list({e for step in chain for e in step.get("environment", [])})),
